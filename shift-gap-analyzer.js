@@ -48,14 +48,16 @@ const NAME_BY_EMAIL = {
 };
 const EMAIL_BY_NAME = Object.fromEntries(Object.entries(NAME_BY_EMAIL).map(([e, n]) => [n, e]));
 
-// זוגות שמות שסביר שהם אותו קמפיין תחת שם שונה — יסומנו "בדיקת שם" ולא "פער מלא".
-const SOFT_SAME = [
-    ['רועי אמגר - מתחברות', 'גמח עריסות - מתחברת'],
+// כינויים: שמות שהם אותו מוסד/קמפיין בפועל תחת תיוג שונה.
+// כל קבוצה מנורמלת לשם הראשון => נחשב התאמה מלאה, לא פער.
+const ALIASES = [
+    ['רועי אמגר - מתחברות', 'גמח עריסות - מתחברת'],  // אושר: אותו מוסד
 ];
-function softEq(a, b) {
-    if (a === b) return true;
-    return SOFT_SAME.some(p => p.includes(a) && p.includes(b));
+function canon(name) {
+    for (const g of ALIASES) if (g.includes(name)) return g[0];
+    return name;
 }
+function sameInst(a, b) { return canon(a) === canon(b); }
 
 // ─── עזרי זמן ──────────────────────────────────────────────────
 // חילוץ תאריך+דקה בשעון ישראל מתוך UUID
@@ -204,9 +206,8 @@ function analyze(shifts, calls) {
 
         let status;
         if (inWin.length === 0) status = 'no_evidence';
-        else if (actual.every(a => a === s.marked)) status = 'match';
-        else if (actual.every(a => softEq(a, s.marked))) status = 'naming_review';
-        else if (actual.some(a => softEq(a, s.marked))) status = 'partial_mismatch';
+        else if (actual.every(a => sameInst(a, s.marked))) status = 'match';
+        else if (actual.some(a => sameInst(a, s.marked))) status = 'partial_mismatch';
         else status = 'mismatch';
 
         results.push({
