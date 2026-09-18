@@ -15,8 +15,8 @@
 //
 // הרצה:
 //   node shift-gap-analyzer.js --shifts shifts.csv --start 2026-08-01 --end 2026-10-01
-//   הוסף --write-airtable כדי לכתוב לטבלת "Shift Gaps".
-//   הוסף גם --replace כדי לנקות את הטבלה הקיימת לפני הכתיבה (מונע כפילויות).
+//   הוסף --write-airtable כדי להוסיף לטבלת "Shift Gaps" רק שורות חסרות
+//   (לא מוחק ולא דורס; התנגשויות מודפסות לטיפול ידני).
 //
 // פורמט ה-CSV של המשמרות (עם כותרות, כפי שמיוצא ממערכת המשמרות):
 //   עובד,אימייל,תאריך,כניסה,יציאה,משך (שעות),מוסד,auto-stopped,override
@@ -96,32 +96,23 @@ function airtableGet(path) {
         req.end();
     });
 }
-function airtableDelete(table, ids) {
-    return new Promise((resolve, reject) => {
-        const qs = ids.map(id => 'records[]=' + encodeURIComponent(id)).join('&');
-        const req = https.request({
-            hostname: 'api.airtable.com', port: 443,
-            path: `/v0/${BASE_ID}/${table}?${qs}`, method: 'DELETE',
-            headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}` },
-        }, res => {
-            let d = ''; res.on('data', c => d += c);
-            res.on('end', () => res.statusCode === 200 ? resolve(JSON.parse(d)) : reject(new Error('Airtable DELETE ' + res.statusCode + ': ' + d)));
-        });
-        req.on('error', reject);
-        req.end();
-    });
-}
-async function clearTable(table) {
-    let offset = '', ids = [];
+// שליפת השורות הקיימות בטבלת הפערים -> מפתח "עובד|תאריך|כניסה" => {status, actual}
+async function fetchExistingGaps(table) {
+    const map = {};
+    let offset = '';
     do {
-        let path = `/v0/${BASE_ID}/${table}?pageSize=100&fields[]=Worker`;
+        let path = `/v0/${BASE_ID}/${table}?pageSize=100` +
+            ['Worker', 'Date', 'Shift Start', 'Status', 'Actual Institutions']
+                .map(f => 'fields[]=' + encodeURIComponent(f)).join('&').replace(/^/, '&');
         if (offset) path += '&offset=' + encodeURIComponent(offset);
         const res = await airtableGet(path);
-        ids.push(...(res.records || []).map(r => r.id));
+        for (const r of res.records || []) {
+            const f = r.fields || {};
+            map[`${f.Worker}|${f.Date}|${f['Shift Start']}`] = { status: f.Status, actual: f['Actual Institutions'] };
+        }
         offset = res.offset || '';
     } while (offset);
-    for (let i = 0; i < ids.length; i += 10) await airtableDelete(table, ids.slice(i, i + 10));
-    return ids.length;
+    return map;
 }
 function airtablePost(table, records) {
     return new Promise((resolve, reject) => {
@@ -267,13 +258,25 @@ function gapRow(r) {
         },
     };
 }
+function actualString(byInst) {
+    return Object.entries(byInst).map(([k, v]) => `${k} (${v})`).join(' | ');
+}
+// מוסיף רק שורות חסרות. לא מוחק ולא דורס. התנגשות (אותה משמרת, תוצאה שונה) מדווחת לטיפול ידני.
 async function writeGaps(results) {
     const gaps = results.filter(r => STATUS_HE[r.status]);
-    const rows = gaps.map(gapRow);
-    for (let i = 0; i < rows.length; i += 10) {
-        await airtablePost(GAPS_TABLE, rows.slice(i, i + 10));
+    const existing = await fetchExistingGaps(GAPS_TABLE);
+    const toAdd = [], conflicts = [];
+    let same = 0;
+    for (const r of gaps) {
+        const key = `${r.worker}|${r.date}|${r.shiftStart}`;
+        const ex = existing[key];
+        if (!ex) { toAdd.push(gapRow(r)); continue; }
+        const curStatus = STATUS_HE[r.status], curActual = actualString(r.byInst);
+        if (ex.status === curStatus && ex.actual === curActual) same++;
+        else conflicts.push({ key, was: `${ex.status} | ${ex.actual}`, now: `${curStatus} | ${curActual}` });
     }
-    return gaps.length;
+    for (let i = 0; i < toAdd.length; i += 10) await airtablePost(GAPS_TABLE, toAdd.slice(i, i + 10));
+    return { added: toAdd.length, same, conflicts };
 }
 
 // ─── CLI ───────────────────────────────────────────────────────
@@ -311,14 +314,13 @@ async function main() {
     console.log('נכתבו shift_gaps.json ו-shift_gaps.csv');
 
     if (doWrite) {
-        if (process.argv.includes('--replace')) {
-            console.log('מנקה את טבלת "Shift Gaps" הקיימת ...');
-            const del = await clearTable(GAPS_TABLE);
-            console.log(`  נמחקו ${del} שורות ישנות`);
+        console.log('מוסיף פערים חסרים לטבלת "Shift Gaps" ב-Airtable (בלי לדרוס) ...');
+        const w = await writeGaps(results);
+        console.log(`  נוספו ${w.added} שורות חדשות · ${w.same} כבר קיימות וזהות · ${w.conflicts.length} התנגשויות`);
+        if (w.conflicts.length) {
+            console.log('  ⚠️ התנגשויות לטיפול ידני (משמרת קיימת עם תוצאה שונה):');
+            for (const c of w.conflicts) console.log(`     ${c.key}\n        קיים:  ${c.was}\n        חדש:   ${c.now}`);
         }
-        console.log('כותב פערים לטבלת "Shift Gaps" ב-Airtable ...');
-        const n = await writeGaps(results);
-        console.log(`  נכתבו ${n} שורות פער`);
     } else {
         console.log('(דילוג על כתיבה ל-Airtable — הוסף --write-airtable כדי לכתוב)');
     }
