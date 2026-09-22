@@ -11,12 +11,16 @@
 //     מתוך התרומות בונים מפה (תאריך, phone_my_user) -> טלפן, ואז משייכים גם
 //     שיחות ללא מענה (שאין בהן זיכוי) לפי מספר החיוג של אותו יום = כיסוי מלא.
 //
-// דרישות: משתני סביבה AIRTABLE_API_KEY. (אין צורך ב-maskyoo — הזמן מוטמע ב-UUID.)
+// דרישות: משתנה סביבה AIRTABLE_API_KEY (לניתוח הפערים — הזמן מוטמע ב-UUID).
+//   למצב --precise-hours נדרש גם MASKYOO_API_KEY.
 //
 // הרצה:
 //   node shift-gap-analyzer.js --shifts shifts.csv --start 2026-08-01 --end 2026-10-01
 //   הוסף --write-airtable כדי להוסיף לטבלת "Shift Gaps" רק שורות חסרות
 //   (לא מוחק ולא דורס; התנגשויות מודפסות לטיפול ידני).
+//   הוסף --precise-hours לחישוב שעות פעילות מדויקות פר-מוסד לכל משמרת,
+//   מתוך ה-CDR של maskyoo (כל שיחה שיצאה) -> shift_precise_hours.csv.
+//   מיפוי שיחה->מוסד: טלפון הלקוח (cdr_ani) -> ליד -> telemarketing clients.
 //
 // פורמט ה-CSV של המשמרות (עם כותרות, כפי שמיוצא ממערכת המשמרות):
 //   עובד,אימייל,תאריך,כניסה,יציאה,משך (שעות),מוסד,auto-stopped,override
@@ -33,10 +37,17 @@ const GAPS_TABLE  = 'tbli1dMmNsZjgyrjH';       // Shift Gaps
 // שדות בטבלת ה-Telemarketing
 const F = {
     phoneMyUser: 'phone_my_user',
+    phoneNumber: 'phone_number',    // טלפון הלקוח — לשיוך שיחת CDR למוסד
     callTime:    'call_time',       // תאריך בלבד (ללא שעה) — משמש רק כפילטר גס
     uuid:        'UUID',            // "<unix>.<seq>" — הזמן המדויק
     client:      'telemarketing clients',
     creditedTo:  'Donation Credited To',
+};
+
+// maskyoo — נדרש רק למצב --precise-hours (שעות מדויקות מכל השיחות שיצאו)
+const MASKYOO = {
+    apiKey: process.env.MASKYOO_API_KEY,
+    baseUrl: 'https://app.maskyoo.co.il/issa_153/api/',
 };
 
 // שיוך אימייל <-> שם טלפן (מתוך ה-CSV; ניתן להרחבה)
@@ -240,6 +251,111 @@ function analyze(shifts, calls) {
     return results;
 }
 
+// ═══════════════════════════════════════════════════════════════
+// מצב --precise-hours: שעות פעילות מדויקות פר-מוסד לכל משמרת,
+// מתוך ה-CDR של maskyoo (כל שיחה שיצאה, כולל ללא מענה).
+// ═══════════════════════════════════════════════════════════════
+function normPhone(p) {
+    let c = String(p || '').replace(/\D/g, '');
+    if (!c) return '';
+    if (c.startsWith('972')) c = c.slice(3);
+    else if (c.startsWith('0')) c = c.slice(1);
+    return c; // צורה מקומית ללא קידומת/0 מוביל, להשוואה
+}
+function hmHours(dec) {
+    const sg = dec < 0 ? '-' : ''; let x = Math.abs(dec);
+    let h = Math.floor(x + 1e-9); let m = Math.round((x - h) * 60);
+    if (m === 60) { h++; m = 0; }
+    return sg + h + ':' + String(m).padStart(2, '0');
+}
+function maskyooQuery(sql) {
+    return new Promise((resolve, reject) => {
+        const body = new URLSearchParams({ service: 'cdr_query', sql, format: 'json' }).toString();
+        const req = https.request(MASKYOO.baseUrl, {
+            method: 'POST',
+            headers: {
+                Authorization: `Bearer ${MASKYOO.apiKey}`,
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Content-Length': Buffer.byteLength(body),
+                'User-Agent': 'ShiftGapAnalyzer/1.0',
+            },
+        }, res => {
+            let d = ''; res.on('data', c => d += c);
+            res.on('end', () => { try { resolve(JSON.parse(d).result || []); } catch (e) { reject(new Error('Maskyoo bad JSON: ' + d.slice(0, 300))); } });
+        });
+        req.on('error', reject); req.write(body); req.end();
+    });
+}
+// מפה: טלפון לקוח (מנורמל) -> מוסד. נבנית פעם אחת מטבלת הלידים.
+async function buildPhoneInstMap() {
+    const map = {};
+    const fields = [F.phoneNumber, F.client].map(f => 'fields[]=' + encodeURIComponent(f)).join('&');
+    let offset = '';
+    do {
+        let path = `/v0/${BASE_ID}/${LEADS_TABLE}?pageSize=100&${fields}`;
+        if (offset) path += '&offset=' + encodeURIComponent(offset);
+        const res = await airtableGet(path);
+        for (const r of res.records || []) {
+            const ph = normPhone((r.fields || {})[F.phoneNumber]);
+            const cl = (r.fields || {})[F.client];
+            const name = Array.isArray(cl) && cl.length ? (cl[0].name || cl[0]) : cl;
+            if (ph && name) map[ph] = canon(name);
+        }
+        offset = res.offset || '';
+    } while (offset);
+    return map;
+}
+// מפה: (אימייל|תאריך) -> קבוצת מספרי חיוג, ו(אימייל)->קבוצה, מתוך זיכויי התרומות
+function buildOperatorNumbers(calls) {
+    const byDay = {}, byOp = {};
+    for (const c of calls) {
+        if (c.credited && NAME_BY_EMAIL[c.credited] && c.phone) {
+            (byDay[`${c.credited}|${c.day}`] = byDay[`${c.credited}|${c.day}`] || new Set()).add(c.phone);
+            (byOp[c.credited] = byOp[c.credited] || new Set()).add(c.phone);
+        }
+    }
+    return { byDay, byOp };
+}
+async function preciseHours(shifts, calls) {
+    if (!MASKYOO.apiKey) { console.error('מצב --precise-hours דורש MASKYOO_API_KEY בסביבה'); process.exit(1); }
+    console.log('בונה מפת טלפון->מוסד מטבלת הלידים ...');
+    const phoneInst = await buildPhoneInstMap();
+    console.log(`  ${Object.keys(phoneInst).length} מספרי לקוח ממופים`);
+    const { byDay, byOp } = buildOperatorNumbers(calls);
+    const totals = {};
+    const rows = [['עובד', 'תאריך', 'משמרת', 'שעות רשומות', 'מוסד שנרשם', 'שעות פעילות (CDR)', 'פילוח פר-מוסד']];
+    for (const s of shifts) {
+        const nums = [...(byDay[`${s.email}|${s.date}`] || byOp[s.email] || new Set())];
+        if (!nums.length) { rows.push([s.worker, s.date, `${s.inStart}-${s.inEnd}`, hmHours(s.hours), s.marked, '', 'אין מספר חיוג ידוע']); continue; }
+        const ddi = nums.map(n => `'972${n}','0${n}'`).join(',');
+        const sql = `SELECT start_call, cdr_ani, call_status FROM webserviceview ` +
+            `WHERE cdr_ddi IN (${ddi}) AND start_call >= '${s.date} ${s.inStart}' AND start_call <= '${s.date} ${s.inEnd}' ORDER BY start_call ASC`;
+        let cdr = [];
+        try { cdr = await maskyooQuery(sql); } catch (e) { console.error(`  CDR שגיאה ${s.worker} ${s.date}: ${e.message}`); }
+        // חלוקת חצאי-שעה -> מוסד דומיננטי לפי טלפון הלקוח
+        const slotInst = {};
+        for (const c of cdr) {
+            const t = c.start_call && c.start_call.split(' ')[1]; if (!t) continue;
+            const [h, m] = t.split(':'); const slot = (+h) * 2 + (+m >= 30 ? 1 : 0);
+            const inst = phoneInst[normPhone(c.cdr_ani)] || 'לא ידוע';
+            (slotInst[slot] = slotInst[slot] || {})[inst] = (slotInst[slot][inst] || 0) + 1;
+        }
+        const perInst = {};
+        for (const k in slotInst) { const top = Object.entries(slotInst[k]).sort((a, b) => b[1] - a[1])[0][0]; perInst[top] = (perInst[top] || 0) + 0.5; }
+        for (const i in perInst) totals[i] = (totals[i] || 0) + perInst[i];
+        const tot = Object.values(perInst).reduce((a, b) => a + b, 0);
+        const brk = Object.entries(perInst).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${hmHours(v)}`).join(' | ');
+        rows.push([s.worker, s.date, `${s.inStart}-${s.inEnd}`, hmHours(s.hours), s.marked, hmHours(tot), brk]);
+    }
+    fs.writeFileSync('shift_precise_hours.csv', '﻿' + rows.map(r => r.map(v => '"' + String(v).replace(/"/g, '""') + '"').join(',')).join('\n'));
+    console.log('\n=== שעות פעילות מדויקות פר-מוסד (CDR) ===');
+    for (const i of Object.keys(totals).sort((a, b) => totals[b] - totals[a])) {
+        const rate = ({ 'ישיבת דימונה': 80, 'עטרת ירושלים': 75, 'מוסדות עצם': 70 })[i];
+        console.log(`  ${i}: ${hmHours(totals[i])}` + (rate ? `  ×${rate} = ${Math.round(totals[i] * rate)} ₪` : ''));
+    }
+    console.log('\nנכתב shift_precise_hours.csv');
+}
+
 // ─── כתיבה ל-Airtable ("Shift Gaps") ───────────────────────────
 const STATUS_HE = { mismatch: 'פער מלא', partial_mismatch: 'פער חלקי', naming_review: 'בדיקת שם' };
 function gapRow(r) {
@@ -284,7 +400,7 @@ function arg(name, def) { const i = process.argv.indexOf('--' + name); return i 
 async function main() {
     if (!AIRTABLE_API_KEY) { console.error('חסר AIRTABLE_API_KEY בסביבה'); process.exit(1); }
     const shiftsPath = arg('shifts');
-    if (!shiftsPath) { console.error('שימוש: node shift-gap-analyzer.js --shifts <csv> [--start YYYY-MM-DD] [--end YYYY-MM-DD] [--write-airtable]'); process.exit(1); }
+    if (!shiftsPath) { console.error('שימוש: node shift-gap-analyzer.js --shifts <csv> [--start YYYY-MM-DD] [--end YYYY-MM-DD] [--write-airtable] [--precise-hours]'); process.exit(1); }
     const start = arg('start', '2026-08-01');
     const end   = arg('end', '2026-10-01');
     const doWrite = process.argv.includes('--write-airtable');
@@ -296,6 +412,12 @@ async function main() {
     console.log(`שולף שיחות מ-Airtable לטווח ${start}..${end} ...`);
     const calls = await fetchCalls(new Date(start), new Date(end));
     console.log(`  ${calls.length} שיחות עם UUID`);
+
+    if (process.argv.includes('--precise-hours')) {
+        // שעות פעילות מדויקות פר-מוסד לכל משמרת מתוך CDR של maskyoo
+        await preciseHours(shifts, calls);
+        return;
+    }
 
     const results = analyze(shifts, calls);
     const counts = {};
