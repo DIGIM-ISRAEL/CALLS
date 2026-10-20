@@ -11,6 +11,11 @@
 const https = require('https');
 const fs = require('fs');
 
+// טעינת משתנים מקובץ .env בשרת (אם קיים ו-dotenv מותקן); משתנים שכבר מוגדרים בסביבה לא נדרסים
+for (const envPath of [`${__dirname}/.env`, '/var/webhook-forwarder/.env']) {
+    try { if (fs.existsSync(envPath)) { require('dotenv').config({ path: envPath }); break; } } catch {}
+}
+
 const MASKYOO_API_KEY = process.env.MASKYOO_API_KEY;
 const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY;
 const BASE_ID = 'app5pnaEc4UK3RUcP';
