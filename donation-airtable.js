@@ -46,8 +46,17 @@ async function updateDonationRecord(recordId, fields, airtableConfig) {
     });
 }
 
+// סטטוסי שיחה (נענה/לא נענה) — לא נדרסים על ידי תהליך הניתוח
+const CALL_STATUSES = new Set(['Answered', 'No Answer', 'answered', 'no_answer']);
+
 async function setCallStatus(recordId, status, airtableConfig) {
-    return updateDonationRecord(recordId, { call_status: status }, airtableConfig);
+    if (CALL_STATUSES.has(status)) {
+        // סטטוס שיחה — שדה call_status
+        return updateDonationRecord(recordId, { call_status: status }, airtableConfig);
+    } else {
+        // סטטוס ניתוח (Processing / Done / Error) — שדה נפרד
+        return updateDonationRecord(recordId, { analysis_status: status }, airtableConfig);
+    }
 }
 
 async function saveDonationResults({ recordId, transcript, analysis, airtableConfig }) {
@@ -62,8 +71,13 @@ async function saveDonationResults({ recordId, transcript, analysis, airtableCon
         Sentiment: analysis.sentiment,
         'Improvement Suggestions': analysis.improvement_suggestions,
         'sent link': analysis.sent_link,
-        call_status: 'Done'
+        analysis_status: 'Done'   // לא דורס call_status (Answered/No Answer)
     };
+
+    // סכום תרומה שזוהה ע"י ה-AI = תרומה משוערת → מסמנים את הצ'קבוקס 'maybe donation'
+    if (Number(analysis.donation_amount) > 0) {
+        fields['maybe donation'] = true;
+    }
 
     return updateDonationRecord(recordId, fields, airtableConfig);
 }
