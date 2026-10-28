@@ -5,7 +5,55 @@ const https = require('https');
 const FormData = require('form-data');
 const { Readable } = require('stream');
 const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { execFileSync } = require('child_process');
 const { cleanTranscript } = require('./text-processor');
+
+// Transcription hardening (Part 1): chunk long calls (avoid whole-file truncation),
+// retry + timeout (avoid hangs), and strip ASR repetition loops (silence/noise makes
+// the model repeat a phrase endlessly and fill the transcript with garbage).
+const FFMPEG_PATH = process.env.FFMPEG_PATH || '/usr/bin/ffmpeg';
+const CHUNK_SECONDS = 120;
+const TRANSCRIBE_TIMEOUT_MS = 180000;
+const CHUNK_SIZE_THRESHOLD = 1200000; // ~>8–10 min mp3 → chunk instead of one request
+
+// Collapse a short phrase (1–5 words) repeated ≥3× in a row down to a single instance.
+function collapseWordLoops(s) {
+    const words = String(s).split(/\s+/).filter(Boolean);
+    const out = [];
+    let i = 0;
+    while (i < words.length) {
+        let done = false;
+        for (let len = 1; len <= 5 && i + len * 3 <= words.length; len++) {
+            const phrase = words.slice(i, i + len).join(' ');
+            let reps = 1;
+            while (words.slice(i + reps * len, i + reps * len + len).join(' ') === phrase) reps++;
+            if (reps >= 3) { out.push(...words.slice(i, i + len)); i += reps * len; done = true; break; }
+        }
+        if (!done) { out.push(words[i]); i++; }
+    }
+    return out.join(' ');
+}
+
+// Remove runaway repetition: collapse consecutive duplicate sentences, then word loops.
+function stripRepetitionLoops(text) {
+    if (!text) return text;
+    // Compare on a tight signature: drop whitespace, punctuation and corruption marks (�)
+    // so near-identical loop fragments collapse even with minor boundary noise.
+    const norm = (u) => u.replace(/[�]/g, '').replace(/[.,!?…"'()\s]/g, '').trim();
+    const units = text.split(/(?<=[.!?…,])\s+|\n+/).map(s => s.trim()).filter(Boolean);
+    const out = [];
+    let i = 0;
+    while (i < units.length) {
+        const n = norm(units[i]);
+        let j = i + 1;
+        while (j < units.length && n.length > 0 && norm(units[j]) === n) j++;
+        out.push(units[i]); // keep one of the repeated unit
+        i = j;
+    }
+    return out.map(collapseWordLoops).join(' ').replace(/\s+/g, ' ').trim();
+}
 
 console.log('🧠 Loading Speech Analyzer (Whisper + GPT-4)...');
 
@@ -43,7 +91,7 @@ function calculateFollowUpDate(followUpPeriod) {
 
 // 🔐 קונפיגורציה - OpenAI API
 const OPENAI_CONFIG = {
-    apiKey: 'process.env.OPENAI_API_KEY',
+    apiKey: process.env.OPENAI_API_KEY || (() => { try { return require('fs').readFileSync(require('path').join(__dirname, '.openai-key'), 'utf8').trim(); } catch { return ''; } })(), // env, else .openai-key
     whisperModel: 'gpt-4o-transcribe',
     gptModel: 'gpt-4o',
     baseUrl: 'https://api.openai.com/v1'
@@ -131,106 +179,119 @@ function validateAndSanitize(value, fieldType, fieldName) {
 
 console.log('🛡️ Security layers loaded successfully');
 
-// 🎵 תמלול קובץ אודיו עם Whisper
-async function transcribeAudioWithWhisper(audioBuffer, filename) {
-    return new Promise((resolve, reject) => {
-        console.log(`\n🎵 === TRANSCRIBING WITH WHISPER ===`);
-        console.log(`📁 File: ${filename}`);
-        console.log(`📦 Size: ${audioBuffer.length} bytes`);
-        
+// 🎵 תמלול בקשה בודדת (עם timeout קשיח)
+function transcribeOnce(audioBuffer, filename) {
+    return new Promise((resolve) => {
         if (!OPENAI_CONFIG.apiKey || OPENAI_CONFIG.apiKey.includes('YOUR_OPENAI_API_KEY_HERE')) {
             console.error(`❌ OpenAI API Key not configured`);
-            resolve({
-                success: false,
-                error: 'OpenAI API Key not configured'
-            });
+            resolve({ success: false, error: 'OpenAI API Key not configured' });
             return;
         }
-        
-        // יצירת FormData להעלאת הקובץ
         const formData = new FormData();
-        
-        // המרת Buffer ל-Readable stream
-        const audioStream = new Readable({
-            read() {}
-        });
+        const audioStream = new Readable({ read() {} });
         audioStream.push(audioBuffer);
         audioStream.push(null);
-        
-        formData.append('file', audioStream, {
-            filename: filename,
-            contentType: 'audio/mpeg'
-        });
+        formData.append('file', audioStream, { filename, contentType: 'audio/mpeg' });
         formData.append('model', OPENAI_CONFIG.whisperModel);
         formData.append('language', 'he');
         formData.append('response_format', 'json');
         formData.append('temperature', '0.0');
         formData.append('prompt', 'שיחת מכירה בעברית. יש לפסק משפטים ולהוסיף סימני פיסוק.');
-        
-        console.log(`🔄 Sending to OpenAI Whisper...`);
-        
+
         const options = {
-            hostname: 'api.openai.com',
-            port: 443,
-            path: '/v1/audio/transcriptions',
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${OPENAI_CONFIG.apiKey}`,
-                ...formData.getHeaders()
-            }
+            hostname: 'api.openai.com', port: 443, path: '/v1/audio/transcriptions', method: 'POST',
+            headers: { 'Authorization': `Bearer ${OPENAI_CONFIG.apiKey}`, ...formData.getHeaders() }
         };
-        
         const req = https.request(options, (res) => {
             let data = '';
             res.on('data', (chunk) => { data += chunk; });
             res.on('end', () => {
-                console.log(`📨 Whisper Response (${res.statusCode})`);
-                
                 if (res.statusCode !== 200) {
-                    console.error(`❌ Whisper API Error: ${data}`);
-                    resolve({
-                        success: false,
-                        error: `Whisper API error (${res.statusCode}): ${data}`
-                    });
+                    resolve({ success: false, error: `Whisper API error (${res.statusCode}): ${data}` });
                     return;
                 }
-                
                 try {
                     const result = JSON.parse(data);
-                    const transcript = result.text || '';
-                    
-                    console.log(`✅ Transcription completed`);
-                    console.log(`📝 Text length: ${transcript.length} characters`);
-                    console.log(`🔤 Preview: ${transcript.substring(0, 100)}...`);
-                    
-                    resolve({
-                        success: true,
-                        transcript: transcript,
-                        language: result.language || 'he',
-                        duration: result.duration || 'unknown'
-                    });
-                    
+                    resolve({ success: true, transcript: result.text || '', language: result.language || 'he', duration: result.duration || 'unknown' });
                 } catch (error) {
-                    console.error(`❌ Whisper response parse error:`, error.message);
-                    resolve({
-                        success: false,
-                        error: `Invalid JSON from Whisper: ${data}`
-                    });
+                    resolve({ success: false, error: `Invalid JSON from Whisper: ${data}` });
                 }
             });
         });
-        
-        req.on('error', (error) => {
-            console.error(`❌ Whisper request error:`, error.message);
-            resolve({
-                success: false,
-                error: error.message
-            });
-        });
-        
-        // שליחת FormData
+        // The guard that was missing in prod: a hard timeout so a stuck request can't hang forever.
+        req.setTimeout(TRANSCRIBE_TIMEOUT_MS, () => { req.destroy(new Error(`timeout after ${TRANSCRIBE_TIMEOUT_MS}ms`)); });
+        req.on('error', (error) => resolve({ success: false, error: error.message }));
         formData.pipe(req);
     });
+}
+
+async function transcribeWithRetry(audioBuffer, filename, tries = 2) {
+    let last;
+    for (let i = 0; i < tries; i++) {
+        const r = await transcribeOnce(audioBuffer, filename);
+        if (r && r.success) return r;
+        last = r;
+        console.warn(`⚠️ Transcribe attempt ${i + 1}/${tries} failed: ${r && r.error}`);
+    }
+    return last;
+}
+
+// 🎵 כניסה ראשית: לחלק שיחות ארוכות (למנוע חיתוך), retry, לתפור, ולנקות לולאות חזרה.
+async function transcribeAudioWithWhisper(audioBuffer, filename) {
+    console.log(`\n🎵 === TRANSCRIBING === ${filename} (${audioBuffer.length} bytes)`);
+    const finish = (r) => { if (r && r.success) r.transcript = stripRepetitionLoops(r.transcript); return r; };
+
+    // Normalize non-mp3 inputs (m4a/aac/amr/3gp/ogg/wav — e.g. phone-recorded calls) to mp3.
+    // transcribeOnce sends content-type audio/mpeg; a mismatch makes Whisper return
+    // "Audio file might be corrupted or unsupported" (400). ffmpeg re-encode fixes any
+    // device format. Maskyoo recordings are already .mp3 → skipped (no overhead).
+    if (!/\.(mp3|mpga|mpeg)$/i.test(filename)) {
+        try {
+            const nd = fs.mkdtempSync(path.join(os.tmpdir(), 'sx-'));
+            const inF = path.join(nd, 'in' + (path.extname(filename) || '.bin'));
+            const outF = path.join(nd, 'out.mp3');
+            fs.writeFileSync(inF, audioBuffer);
+            execFileSync(FFMPEG_PATH, ['-y', '-i', inF, '-ac', '1', '-c:a', 'libmp3lame', '-b:a', '64k', outF], { stdio: 'ignore' });
+            audioBuffer = fs.readFileSync(outF);
+            filename = 'audio.mp3';
+            console.log(`🔄 Re-encoded to mp3 (${audioBuffer.length} bytes) for Whisper`);
+            try { fs.rmSync(nd, { recursive: true, force: true }); } catch { /* ignore */ }
+        } catch (e) {
+            console.warn(`⚠️ Re-encode failed (${e.message}); sending original`);
+        }
+    }
+
+    if (audioBuffer.length <= CHUNK_SIZE_THRESHOLD) {
+        return finish(await transcribeWithRetry(audioBuffer, filename));
+    }
+    // Long recording → split into time segments so the model can't truncate the tail.
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-'));
+    const inFile = path.join(tmp, 'in.mp3');
+    try {
+        fs.writeFileSync(inFile, audioBuffer);
+        // Re-encode (not -c copy): copying splits mid-frame and corrupts chunk boundaries,
+        // which garbles the transcription there (replacement chars + loops). libmp3lame
+        // re-encodes each segment cleanly.
+        execFileSync(FFMPEG_PATH, ['-y', '-i', inFile, '-f', 'segment', '-segment_time', String(CHUNK_SECONDS), '-c:a', 'libmp3lame', '-b:a', '64k', path.join(tmp, 'seg_%03d.mp3')], { stdio: 'ignore' });
+        const segs = fs.readdirSync(tmp).filter(f => /^seg_\d+\.mp3$/.test(f)).sort();
+        if (segs.length === 0) return finish(await transcribeWithRetry(audioBuffer, filename));
+        console.log(`🔪 Chunked into ${segs.length} segments`);
+        const parts = [];
+        for (const seg of segs) {
+            const r = await transcribeWithRetry(fs.readFileSync(path.join(tmp, seg)), seg);
+            if (!r || !r.success) { console.error(`❌ Chunk ${seg} failed, skipping: ${r && r.error}`); continue; }
+            parts.push((r.transcript || '').trim());
+        }
+        if (parts.length === 0) return { success: false, error: 'all chunks failed' };
+        const transcript = stripRepetitionLoops(parts.join(' '));
+        console.log(`✅ Chunked transcription: ${transcript.length} chars from ${segs.length} segments`);
+        return { success: true, transcript, language: 'he', duration: 'chunked' };
+    } catch (e) {
+        console.error(`❌ Chunked path failed (${e.message}); falling back to single request`);
+        return finish(await transcribeWithRetry(audioBuffer, filename));
+    } finally {
+        try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
 }
 
 // 🧠 ניתוח מכירה מתקדם עם GPT-4

@@ -6,8 +6,56 @@ const fs = require('fs');
 const { transcribeAudioWithWhisper } = require('./speech-analyzer');
 const { saveDonationResults, setCallStatus } = require('./donation-airtable');
 
-const OPENAI_API_KEY = 'process.env.OPENAI_API_KEY';
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || (() => { try { return require('fs').readFileSync(require('path').join(__dirname, '.openai-key'), 'utf8').trim(); } catch { return ''; } })(); // env, else .openai-key next to this file — never commit the key
 const GPT_MODEL = 'gpt-4o';
+
+// קריאה ל-answer-checker (CDR+VAD) — המקור הסמכותי היחיד ל-call_status (Answered/No Answer).
+// מחליף את ההסתמכות על שדה ה-AI call_answered שאינו אמין מספיק.
+const ANSWER_CHECKER_URL = process.env.ANSWER_CHECKER_URL || 'http://127.0.0.1:3020/check-single';
+
+// אם הלקוח נענה ויש לו פולואפ — מוחקים את 'Next Follow Up'
+function clearFollowUp(recordId, airtableConfig) {
+    return new Promise((resolve) => {
+        const https = require('https');
+        const body = JSON.stringify({ fields: { 'Next Follow Up': null } });
+        const opts = {
+            hostname: 'api.airtable.com', port: 443,
+            path: `/v0/${airtableConfig.baseId}/${airtableConfig.tableId}/${recordId}`,
+            method: 'PATCH',
+            headers: { 'Authorization': `Bearer ${airtableConfig.apiKey}`, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+        };
+        const req = https.request(opts, (res) => { let d = ''; res.on('data', c => d += c); res.on('end', () => resolve({ ok: res.statusCode === 200, status: res.statusCode })); });
+        req.on('error', e => resolve({ ok: false, error: e.message }));
+        req.write(body); req.end();
+    });
+}
+
+function runAnswerCheck(recordId, airtableConfig) {
+    return new Promise((resolve) => {
+        const http = require('http');
+        const body = JSON.stringify({ recordId, airtableConfig, force: true });
+        const req = http.request(ANSWER_CHECKER_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+            timeout: 180000
+        }, (res) => {
+            let data = '';
+            res.on('data', d => data += d);
+            res.on('end', () => {
+                try {
+                    const j = JSON.parse(data);
+                    resolve({ ok: true, newStatus: j.newStatus, method: j.method, detail: j.detail, skipped: j.skipped, reason: j.reason });
+                } catch (e) {
+                    resolve({ ok: false, error: `parse: ${data.slice(0, 150)}` });
+                }
+            });
+        });
+        req.on('error', e => resolve({ ok: false, error: e.message }));
+        req.on('timeout', () => { req.destroy(); resolve({ ok: false, error: 'timeout' }); });
+        req.write(body);
+        req.end();
+    });
+}
 
 async function analyzeDonationCall({ transcript, duration, fundraiserPhone, donorPhone }) {
     return new Promise((resolve) => {
@@ -181,19 +229,37 @@ if (require.main === module) {
 
             // שלב 4: שמירה לאיירטייבל
             if (airtableConfig && recordId) {
-                if (analysisResult.analysis.call_answered === false) {
-                    console.log(`📵 AI detected call not answered — marking as No Answer`);
-                    const statusResult = await setCallStatus(recordId, 'No Answer', airtableConfig);
-                    console.log(`📋 No Answer status: ${statusResult.success ? '✅ SUCCESS' : '❌ FAILED'}`);
+                // שמירת תוצאות הניתוח (תמלול/סכום/החלטה) — תמיד, גם אם ה-AI חשב שלא נענה
+                console.log(`\n📋 Saving analysis to Airtable...`);
+                const saveResult = await saveDonationResults({
+                    recordId,
+                    transcript: transcriptionResult.transcript,
+                    analysis: analysisResult.analysis,
+                    airtableConfig
+                });
+                console.log(`📋 Save result: ${saveResult.success ? '✅ SUCCESS' : '❌ FAILED'}`);
+
+                if (callInfo && callInfo.source === 'phone') {
+                    // ערוץ הטלפון: אין CDR. call_status כבר נקבע מה-outcome של האפליקציה ב-/ingest-call.
+                    // לא מריצים answer-checker (הוא מבוסס CDR+VAD של Maskyoo). הסטטוס נשאר כפי שנקבע.
+                    console.log(`\n📞 Phone channel — trusting app-provided call_status (skipping CDR answer-checker).`);
+                    const fu = await clearFollowUp(recordId, airtableConfig);
+                    console.log(`📅 follow-up removed (phone answered): ${fu.ok ? 'OK' : 'FAILED ' + (fu.error || fu.status)}`);
                 } else {
-                    console.log(`\n📋 Saving to Airtable...`);
-                    const saveResult = await saveDonationResults({
-                        recordId,
-                        transcript: transcriptionResult.transcript,
-                        analysis: analysisResult.analysis,
-                        airtableConfig
-                    });
-                    console.log(`📋 Save result: ${saveResult.success ? '✅ SUCCESS' : '❌ FAILED'}`);
+                    // call_status נקבע ע"י המתודה האמינה (CDR + VAD) — answer-checker הוא הסמכות, לא שדה ה-AI
+                    console.log(`\n📞 Running answer-checker (CDR+VAD) for authoritative call_status...`);
+                    const ac = await runAnswerCheck(recordId, airtableConfig);
+                    if (ac.ok) {
+                        console.log(`📞 answer-checker: ${ac.skipped ? `skipped (${ac.reason})` : `${ac.newStatus} [${ac.method}]`}`);
+                    } else {
+                        console.log(`📞 answer-checker FAILED: ${ac.error} — call_status left unchanged`);
+                    }
+
+                    // נענה → מורידים אותו מרשימת הפולואפים
+                    if (ac.ok && ac.newStatus === 'Answered') {
+                        const fu = await clearFollowUp(recordId, airtableConfig);
+                        console.log(`📅 follow-up removed (answered): ${fu.ok ? 'OK' : 'FAILED ' + (fu.error || fu.status)}`);
+                    }
                 }
             }
 

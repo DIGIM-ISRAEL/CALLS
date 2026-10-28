@@ -1,1 +1,11 @@
 .env
+# Secrets live next to the code on the server, never in git (this repo is public)
+.openai-key
+.app-key
+.wa-*
+# Runtime state / data
+.phone-ingest-seen.json
+recordings/
+node_modules/
+# Local tooling
+.claude/

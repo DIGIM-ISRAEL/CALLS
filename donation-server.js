@@ -8,6 +8,7 @@ const https = require('https');
 
 const { processRecordingDownload } = require('./recording-downloader');
 const { setCallStatus } = require('./donation-airtable');
+const { registerPhoneRoutes } = require('./phone-ingest');
 
 const app = express();
 app.use((req, res, next) => {
@@ -23,7 +24,7 @@ const PORT = process.env.PORT || 3002;
 const SECRET_KEY = process.env.DONATION_SECRET_KEY || 'mK9vR3pQ8nX2fA7sB1cD4eF6gH5jL0mN';
 
 const MASKYOO_CONFIG = {
-    apiKey: 'process.env.MASKYOO_API_KEY'
+    apiKey: '4YCzPALh_DhJDB1rXbPuffVfqUFDuK5uA0EKfg_gvnHZQ6Y8SLmsfB1XWzJHufw4pF-8fxXov3YNV140TLr9JbcZ-TwPnp1ML2NvBn-JzBSGLA'
 };
 
 const activeJobs = new Map();
@@ -105,7 +106,7 @@ async function waitForCallAndGetUUID(phoneMyUser, phoneNumber, phoneFundraiser, 
                     `WHERE cdr_ddi = '${phoneMyUser}' ` +
                     `AND (cdr_ani = '${phoneNumber}' OR user_phone = '${phoneNumber}') ` +
                     `AND start_call >= '${startStr}' ` +
-                    `AND end_call IS NOT NULL ` +
+                    `AND end_call > '2000-01-01' ` +
                     `ORDER BY start_call DESC LIMIT 1`;
 
         const result = await queryCDR(sql);
@@ -295,6 +296,9 @@ app.post('/process-donation', verifySecretKey, async (req, res) => {
         airtableConfig
     }).catch(err => console.error(`❌ Job ${jobId} failed:`, err.message));
 });
+
+// ─── ערוץ חיוג מהטלפון (phone-native, ללא Maskyoo) ──────────
+registerPhoneRoutes(app, { setCallStatus });
 
 // ─── הפעלה ───────────────────────────────────────────────
 app.listen(PORT, '0.0.0.0', () => {
