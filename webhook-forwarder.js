@@ -16,7 +16,7 @@ const MASKYOO_CONFIG = {
     baseUrl: 'https://app.maskyoo.co.il/issa_153/api/'
 };
 
-const SECRET_KEY = process.env.SECRET_KEY || 'mK9vR3pQ8nX2fA7sB1cD4eF6gH5jL0mN';
+const SECRET_KEY = process.env.SECRET_KEY || '';
 
 // ⏰ הגדרות זמן לחיפוש UUID
 const AUTO_UUID_CONFIG = {

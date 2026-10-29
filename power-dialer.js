@@ -10,7 +10,7 @@ const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT || 3003;
-const SECRET_KEY = process.env.DIALER_SECRET_KEY || 'mK9vR3pQ8nX2fA7sB1cD4eF6gH5jL0mN';
+const SECRET_KEY = process.env.DIALER_SECRET_KEY || '';
 
 // ─── קונפיגורציה ───────────────────────────────────────────
 const AIRTABLE_CONFIG = {

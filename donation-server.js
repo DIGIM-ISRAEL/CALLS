@@ -9,6 +9,7 @@ const https = require('https');
 const { processRecordingDownload } = require('./recording-downloader');
 const { setCallStatus } = require('./donation-airtable');
 const { registerPhoneRoutes } = require('./phone-ingest');
+const { readSecret, airtableConfig: serverAirtableConfig } = require('./server-secrets');
 
 const app = express();
 app.use((req, res, next) => {
@@ -21,10 +22,14 @@ app.use((req, res, next) => {
 app.use(express.json());
 
 const PORT = process.env.PORT || 3002;
-const SECRET_KEY = process.env.DONATION_SECRET_KEY || 'mK9vR3pQ8nX2fA7sB1cD4eF6gH5jL0mN';
+// המפתח של /process-donation מוחזק רק בפונקציה start-dial (שרת ה-DB), לא בדפדפן
+const SECRET_KEY = readSecret('DONATION_SECRET_KEY', '.donation-key');
+// מעבר: לשוניות שנפתחו לפני ההחלפה עדיין שולחות את המפתח הישן — מתקבל רק עד הבוקר
+const LEGACY_KEY = readSecret('DONATION_LEGACY_KEY', '.donation-key-legacy');
+const LEGACY_UNTIL = Date.parse('2026-10-30T05:00:00Z');
 
 const MASKYOO_CONFIG = {
-    apiKey: '4YCzPALh_DhJDB1rXbPuffVfqUFDuK5uA0EKfg_gvnHZQ6Y8SLmsfB1XWzJHufw4pF-8fxXov3YNV140TLr9JbcZ-TwPnp1ML2NvBn-JzBSGLA'
+    apiKey: readSecret('MASKYOO_API_KEY', '.maskyoo-key')
 };
 
 const activeJobs = new Map();
@@ -42,7 +47,9 @@ function formatPhone(phone) {
 
 // ─── אבטחה ───────────────────────────────────────────────
 function verifySecretKey(req, res, next) {
-    if (req.headers['x-secret-key'] !== SECRET_KEY) {
+    const provided = req.headers['x-secret-key'];
+    const legacyOk = LEGACY_KEY && Date.now() < LEGACY_UNTIL && provided === LEGACY_KEY;
+    if (!legacyOk && (!SECRET_KEY || provided !== SECRET_KEY)) {
         return res.status(401).json({ success: false, error: 'Unauthorized' });
     }
     next();
@@ -260,15 +267,19 @@ app.get('/status/:jobId', (req, res) => {
 app.post('/process-donation', verifySecretKey, async (req, res) => {
     console.log(`\n📥 === NEW DONATION REQUEST ===`);
     console.log(`⏰ ${new Date().toISOString()}`);
-    console.log(`📋 Body:`, JSON.stringify(req.body, null, 2));
+    const { recordId, phoneNumber, phoneMyUser, phoneFundraiser, requestedBy } = req.body;
+    console.log(`📋 record=${recordId} phone=${phoneNumber} myUser=${phoneMyUser} by=${requestedBy || '-'}`);
 
-    const { recordId, phoneNumber, phoneMyUser, phoneFundraiser, airtableConfig } = req.body;
-
-    if (!recordId || !phoneNumber || !phoneMyUser || !airtableConfig?.apiKey || !airtableConfig?.baseId || !airtableConfig?.tableId) {
+    // טוקן איירטייבל מהשרת בלבד — airtableConfig שמגיע בבקשה (גרסאות ישנות) מתעלמים ממנו
+    const airtableConfig = serverAirtableConfig();
+    if (!recordId || !phoneNumber || !phoneMyUser) {
         return res.status(400).json({
             success: false,
-            error: 'Missing required fields: recordId, phoneNumber, phoneMyUser, airtableConfig (apiKey, baseId, tableId)'
+            error: 'Missing required fields: recordId, phoneNumber, phoneMyUser'
         });
+    }
+    if (!airtableConfig.apiKey || !MASKYOO_CONFIG.apiKey) {
+        return res.status(503).json({ success: false, error: 'server keys not configured' });
     }
 
     const formattedPhone = formatPhone(phoneNumber);

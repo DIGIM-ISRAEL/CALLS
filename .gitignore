@@ -9,3 +9,6 @@ recordings/
 node_modules/
 # Local tooling
 .claude/
+.airtable-key
+.maskyoo-key
+.donation-key*

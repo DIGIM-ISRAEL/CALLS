@@ -19,16 +19,8 @@ const SEEN_FILE = '/var/webhook-forwarder/.phone-ingest-seen.json';
 const APP_KEY = process.env.APP_SECRET_KEY
   || (() => { try { return fs.readFileSync('/var/webhook-forwarder/.app-key', 'utf8').trim(); } catch (_) { return ''; } })();
 
-// ─── Airtable (נקרא בזמן ריצה מ-power-dialer.js; הערך לעולם לא נרשם ללוג) ──
-function airtableCfg() {
-  const src = fs.readFileSync(__dirname + '/power-dialer.js', 'utf8');
-  const block = src.slice(src.indexOf('AIRTABLE_CONFIG'));
-  const apiKey = (block.match(/apiKey:\s*'([^']+)'/) || [])[1] || '';
-  return {
-    apiKey, baseId: 'app5pnaEc4UK3RUcP', tableId: 'tblcNkAMMCJQ3EVMl',
-    uuidField: 'UUID', callStatusField: 'call_status', callTimeField: 'call_time', callIdField: 'id_caller',
-  };
-}
+// ─── Airtable (טוקן מ-.airtable-key; הערך לעולם לא נרשם ללוג) ──
+const { airtableConfig: airtableCfg } = require('./server-secrets');
 
 function formatPhone(p) {
   let c = String(p || '').replace(/\D/g, '');
