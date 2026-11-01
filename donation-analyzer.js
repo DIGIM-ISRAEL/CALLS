@@ -5,7 +5,7 @@ const https = require('https');
 const fs = require('fs');
 const { transcribeAudioWithWhisper } = require('./speech-analyzer');
 const { saveDonationResults, setCallStatus } = require('./donation-airtable');
-const { logDial } = require('./dial-logger');
+const { logDial, saveTranscript } = require('./dial-logger');
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || (() => { try { return require('fs').readFileSync(require('path').join(__dirname, '.openai-key'), 'utf8').trim(); } catch { return ''; } })(); // env, else .openai-key next to this file — never commit the key
 const GPT_MODEL = 'gpt-4o';
@@ -239,6 +239,22 @@ if (require.main === module) {
                     airtableConfig
                 });
                 console.log(`📋 Save result: ${saveResult.success ? '✅ SUCCESS' : '❌ FAILED'}`);
+
+                // היסטוריית תמלולים במסד שלנו — באיירטייבל השיחה הבאה דורסת את התמלול
+                await Promise.race([
+                    saveTranscript({
+                        call_uuid: uuid,
+                        airtable_record_id: recordId,
+                        rep_phone: callInfo?.cdr_ani,
+                        donor_phone: callInfo?.user_phone,
+                        source: callInfo?.source === 'phone' ? 'phone' : 'maskyoo',
+                        recording_filename: recording.filename,
+                        duration_seconds: parseInt(callInfo?.call_duration) || 0,
+                        transcript: transcriptionResult.transcript,
+                        analysis: analysisResult.analysis,
+                    }, (m) => console.log(m)),
+                    new Promise(r => setTimeout(r, 6000)),
+                ]);
 
                 if (callInfo && callInfo.source === 'phone') {
                     // ערוץ הטלפון: אין CDR. call_status כבר נקבע מה-outcome של האפליקציה ב-/ingest-call.

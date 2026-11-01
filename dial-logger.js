@@ -26,11 +26,11 @@ const DIAL_LOG_APIKEY = process.env.DIAL_LOG_APIKEY || fileCfg.apikey || '';
  * @param {object} data { rep_phone, donor_phone, call_status, duration_seconds, maskyoo_uuid, started_at, institution_name }
  * @param {(msg:string)=>void} [log] optional logger (e.g. the dialer's addLog)
  */
-function logDial(data, log) {
+function postTo(url, data, log) {
   return new Promise((resolve) => {
   try {
     const payload = JSON.stringify(data || {});
-    const u = new URL(DIAL_LOG_URL);
+    const u = new URL(url);
     const headers = {
       'Content-Type': 'application/json',
       'Content-Length': Buffer.byteLength(payload),
@@ -65,10 +65,20 @@ function logDial(data, log) {
   });
 }
 
+function logDial(data, log) {
+  return postTo(DIAL_LOG_URL, data, log);
+}
+
 // Presence ping for the live screen ("rep is dialing now"), same endpoint and auth.
 function touchActivity(repEmail, action, log) {
   if (!repEmail) return Promise.resolve();
   return logDial({ touch: true, rep_email: repEmail, action: action || 'dial' }, log);
 }
 
-module.exports = { logDial, touchActivity };
+// Keeps every analyzed call's transcript in our DB (Airtable overwrites it on the next call).
+const SAVE_TRANSCRIPT_URL = DIAL_LOG_URL.replace(/log-dial$/, 'save-transcript');
+function saveTranscript(data, log) {
+  return postTo(SAVE_TRANSCRIPT_URL, data, log);
+}
+
+module.exports = { logDial, touchActivity, saveTranscript };
