@@ -5,6 +5,7 @@ const https = require('https');
 const fs = require('fs');
 const { transcribeAudioWithWhisper } = require('./speech-analyzer');
 const { saveDonationResults, setCallStatus } = require('./donation-airtable');
+const { logDial } = require('./dial-logger');
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || (() => { try { return require('fs').readFileSync(require('path').join(__dirname, '.openai-key'), 'utf8').trim(); } catch { return ''; } })(); // env, else .openai-key next to this file — never commit the key
 const GPT_MODEL = 'gpt-4o';
@@ -44,7 +45,7 @@ function runAnswerCheck(recordId, airtableConfig) {
             res.on('end', () => {
                 try {
                     const j = JSON.parse(data);
-                    resolve({ ok: true, newStatus: j.newStatus, method: j.method, detail: j.detail, skipped: j.skipped, reason: j.reason });
+                    resolve({ ok: true, newStatus: j.newStatus, method: j.method, detail: j.detail, skipped: j.skipped, reason: j.reason, previousStatus: j.previousStatus });
                 } catch (e) {
                     resolve({ ok: false, error: `parse: ${data.slice(0, 150)}` });
                 }
@@ -260,6 +261,28 @@ if (require.main === module) {
                         const fu = await clearFollowUp(recordId, airtableConfig);
                         console.log(`📅 follow-up removed (answered): ${fu.ok ? 'OK' : 'FAILED ' + (fu.error || fu.status)}`);
                     }
+
+                    // dial_log — שורה לכל שיחת Maskyoo (ערוץ הטלפון רושם בעצמו ב-phone-ingest).
+                    // ממנה מחושבים "שיחות שנענו" ואחוז ההמרה במסך זמן אמת.
+                    let dialStatus = 'unknown';
+                    if (ac.ok && !ac.skipped) dialStatus = ac.newStatus || 'unknown';
+                    else if (ac.ok && ac.reason === 'already_answered') dialStatus = 'Answered';
+                    else if (ac.ok && ['Answered', 'No Answer'].includes(ac.previousStatus)) dialStatus = ac.previousStatus;
+                    const durationSec = parseInt(callInfo?.call_duration) || 0;
+                    // answer-checker נכשל (למשל download_error) אבל ה-CDR מראה שיחה ארוכה — נענתה
+                    if (dialStatus === 'unknown' && durationSec >= 30) dialStatus = 'Answered';
+                    await Promise.race([
+                        logDial({
+                            rep_phone: callInfo?.cdr_ani,
+                            donor_phone: callInfo?.user_phone,
+                            call_status: dialStatus,
+                            duration_seconds: durationSec,
+                            maskyoo_uuid: uuid,
+                            started_at: new Date(Date.now() - durationSec * 1000).toISOString(),
+                        }, (m) => console.log(m)),
+                        new Promise(r => setTimeout(r, 6000)),
+                    ]);
+                    console.log(`🗒️ dial_log: ${dialStatus}`);
                 }
             }
 

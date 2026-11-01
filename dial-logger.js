@@ -27,6 +27,7 @@ const DIAL_LOG_APIKEY = process.env.DIAL_LOG_APIKEY || fileCfg.apikey || '';
  * @param {(msg:string)=>void} [log] optional logger (e.g. the dialer's addLog)
  */
 function logDial(data, log) {
+  return new Promise((resolve) => {
   try {
     const payload = JSON.stringify(data || {});
     const u = new URL(DIAL_LOG_URL);
@@ -50,15 +51,18 @@ function logDial(data, log) {
       res.on('data', () => {});
       res.on('end', () => {
         if (res.statusCode >= 300 && log) log(`⚠️ dial-log ${res.statusCode}`);
+        resolve();
       });
     });
-    req.on('error', (e) => { if (log) log(`⚠️ dial-log נכשל: ${e.message}`); });
-    req.on('timeout', () => req.destroy());
+    req.on('error', (e) => { if (log) log(`⚠️ dial-log נכשל: ${e.message}`); resolve(); });
+    req.on('timeout', () => { req.destroy(); resolve(); });
     req.write(payload);
     req.end();
   } catch (e) {
     if (log) log(`⚠️ dial-log exception: ${e.message}`);
+    resolve();
   }
+  });
 }
 
 module.exports = { logDial };
