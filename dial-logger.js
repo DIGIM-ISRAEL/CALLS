@@ -65,4 +65,10 @@ function logDial(data, log) {
   });
 }
 
-module.exports = { logDial };
+// Presence ping for the live screen ("rep is dialing now"), same endpoint and auth.
+function touchActivity(repEmail, action, log) {
+  if (!repEmail) return Promise.resolve();
+  return logDial({ touch: true, rep_email: repEmail, action: action || 'dial' }, log);
+}
+
+module.exports = { logDial, touchActivity };

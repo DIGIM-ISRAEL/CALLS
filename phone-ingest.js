@@ -12,7 +12,7 @@ const { spawn } = require('child_process');
 
 let multer = null;
 try { multer = require('multer'); } catch (_) { /* נבדק ב-register */ }
-const { logDial } = require('./dial-logger');
+const { logDial, touchActivity } = require('./dial-logger');
 
 const REC_DIR = '/var/webhook-forwarder/recordings';
 const SEEN_FILE = '/var/webhook-forwarder/.phone-ingest-seen.json';
@@ -87,6 +87,7 @@ function register(app, deps) {
     const b = req.body || {};
     const email = String(b.repEmail || '').toLowerCase();
     if (email) currentDial.set(email, { leadRecordId: b.leadRecordId || null, toNumber: b.toNumber || null, clientDialId: b.clientDialId || null, ts: b.ts || null, at: Date.now() });
+    if (email) touchActivity(email, 'phone_dial');
     res.json({ ok: true });
   });
 
@@ -147,7 +148,7 @@ function register(app, deps) {
         await atRequest('PATCH', `/v0/${airtableCfg().baseId}/${airtableCfg().tableId}/${leadRecordId}`, { fields });
       }
 
-      try { logDial({ rep_phone: repPhone || repEmail, donor_phone: toNumber, call_status, duration_seconds: durationSec, maskyoo_uuid: clientDialId, started_at: dialTime }); } catch (_) {}
+      try { logDial({ rep_phone: repPhone || repEmail, rep_email: repEmail || null, donor_phone: toNumber, call_status, duration_seconds: durationSec, maskyoo_uuid: clientDialId, started_at: dialTime }); } catch (_) {}
 
       // שלב 3: ניתוח (רק אם נענתה והוקלטה)
       let analysisStarted = false;
