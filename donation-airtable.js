@@ -59,6 +59,28 @@ async function setCallStatus(recordId, status, airtableConfig) {
     }
 }
 
+// קריאת הרשומה — כדי לא לדרוס תרומה שכבר נרשמה ידנית/מאושרת
+function getRecordFields(recordId, airtableConfig) {
+    return new Promise((resolve) => {
+        const req = https.request({
+            hostname: 'api.airtable.com',
+            port: 443,
+            path: `/v0/${airtableConfig.baseId}/${airtableConfig.tableId}/${recordId}`,
+            method: 'GET',
+            headers: { 'Authorization': `Bearer ${airtableConfig.apiKey}` }
+        }, (res) => {
+            let data = '';
+            res.on('data', chunk => { data += chunk; });
+            res.on('end', () => {
+                try { resolve(res.statusCode === 200 ? (JSON.parse(data).fields || {}) : null); }
+                catch { resolve(null); }
+            });
+        });
+        req.on('error', () => resolve(null));
+        req.end();
+    });
+}
+
 async function saveDonationResults({ recordId, transcript, analysis, airtableConfig }) {
     const fields = {
         call_transcript: transcript,
@@ -77,6 +99,17 @@ async function saveDonationResults({ recordId, transcript, analysis, airtableCon
     // סכום תרומה שזוהה ע"י ה-AI = תרומה משוערת → מסמנים את הצ'קבוקס 'maybe donation'
     if (Number(analysis.donation_amount) > 0) {
         fields['maybe donation'] = true;
+    }
+
+    // תרומה שכבר נרשמה (Donation Recorded At) היא מאושרת — הניתוח לא דורס סכום/סוג/החלטה
+    // ולא מסמן 'maybe donation' (אחרת הקלטה שמגיעה אחרי ההזנה הידנית מאפסת את התרומה)
+    const existing = await getRecordFields(recordId, airtableConfig);
+    if (existing && existing['Donation Recorded At']) {
+        console.log(`🔒 Donation already recorded (${existing['Donation Recorded At']}) — keeping amount/type/decision`);
+        delete fields.donation_amount;
+        delete fields.donation_type;
+        delete fields.decision;
+        delete fields['maybe donation'];
     }
 
     return updateDonationRecord(recordId, fields, airtableConfig);
