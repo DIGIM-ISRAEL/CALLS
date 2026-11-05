@@ -286,6 +286,13 @@ app.post('/process-donation', verifySecretKey, async (req, res) => {
     const formattedPhoneMyUser = formatPhone(phoneMyUser);
     const formattedPhoneFundraiser = phoneFundraiser ? formatPhone(phoneFundraiser) : null;
 
+    // חיוג חד-פעמי מ"בדיקת מספר": אין ליד מאחוריו, אז רק מחייגים — בלי איירטייבל, הקלטה וניתוח
+    if (String(recordId).startsWith('adhoc_')) {
+        const dialResult = await dialCall(formattedPhone, formattedPhoneMyUser);
+        if (!dialResult.success) console.error(`❌ Ad-hoc dial failed: ${dialResult.error}`);
+        return res.status(dialResult.success ? 200 : 502).json(dialResult);
+    }
+
     const jobId = `don_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
     activeJobs.set(jobId, { status: 'starting', progress: 0, recordId, startTime: Date.now() });
 
