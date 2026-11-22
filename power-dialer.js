@@ -51,7 +51,7 @@ function sleep(ms) {
 async function fetchPendingRecords() {
     return new Promise((resolve) => {
         // פילטר: call_status ריק
-        const filterFormula = encodeURIComponent(`{call_status} = ""`);
+        const filterFormula = encodeURIComponent(`AND({call_status} = "", NOT({DONT TOUCH ME}))`); // DONT TOUCH ME = do-not-contact ("הסר") or protected
         const fields = encodeURIComponent('fields[]=phone_number&fields[]=phone_my_user&fields[]=call_status');
         const path = `/v0/${AIRTABLE_CONFIG.baseId}/${AIRTABLE_CONFIG.tableId}?filterByFormula=${filterFormula}&${fields}&maxRecords=200`;
 
