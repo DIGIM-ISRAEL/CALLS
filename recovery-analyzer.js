@@ -3,16 +3,17 @@
 // שימוש: node recovery-analyzer.js [fromDate]
 // דוגמה: node recovery-analyzer.js 2026-03-13
 
+const { readSecret: __readSecret } = require('./server-secrets'); // secrets live in env / root-only key files, never in code
 const https = require('https');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const path = require('path');
 
-const RECORDINGS_DIR = '/var/webhook-forwarder/recordings';
-const MASKYOO_API_KEY = 'process.env.MASKYOO_API_KEY';
+const RECORDINGS_DIR = '/var/calls-dialer/recordings';
+const MASKYOO_API_KEY = __readSecret('MASKYOO_API_KEY', '.maskyoo-key');
 
 const AIRTABLE_CONFIG = {
-    apiKey: 'process.env.AIRTABLE_API_KEY',
+    apiKey: __readSecret('AIRTABLE_API_KEY', '.airtable-key'),
     baseId: 'app5pnaEc4UK3RUcP',
     mainTableId: 'tblABFOvI4cQSz3sg',
     donationTableId: 'tblcNkAMMCJQ3EVMl'
@@ -87,7 +88,7 @@ async function findUUIDByTime(parsed) {
         FROM webserviceview
         WHERE start_call >= '${startStr}'
         AND start_call <= '${endStr}'
-        AND end_call IS NOT NULL
+        AND end_call > '2000-01-01'
         ORDER BY start_call DESC LIMIT 5`;
 
     console.log(`  📅 CDR search: ${startStr} → ${endStr}`);
@@ -142,7 +143,7 @@ async function runAnalysis(filename, recordId, callInfo, airtableConfig, analyze
         };
 
         const analyzer = spawn('node', [analyzerScript], {
-            cwd: '/var/webhook-forwarder',
+            cwd: '/var/calls-dialer',
             stdio: ['pipe', 'pipe', 'pipe']
         });
 

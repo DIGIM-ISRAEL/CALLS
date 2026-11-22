@@ -18,7 +18,8 @@ const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT || 3003;
-const MASKYOO_API_KEY = process.env.MASKYOO_API_KEY;
+const { readSecret: __readSecret } = require('./server-secrets');
+const MASKYOO_API_KEY = __readSecret('MASKYOO_API_KEY', '.maskyoo-key');
 const MASKYOO_BASE_URL = 'https://app.maskyoo.co.il/issa_153/api/';
 const VAD_SCRIPT = path.join(__dirname, 'vad_check.py');
 const ANSWERED_DURATION_THRESHOLD = 30; // שניות — מעל זה: ודאי נענה ללא VAD
@@ -666,7 +667,7 @@ app.post('/stop', (req, res) => {
 // the donations-server (46.101.204.111) can't call it directly — it relays
 // through here instead. Gated by a shared secret (not open to the internet),
 // and restricted to read-only SELECTs against Maskyoo's own CDR view.
-const CDR_PROXY_TOKEN = process.env.CDR_PROXY_TOKEN;
+const CDR_PROXY_TOKEN = __readSecret('CDR_PROXY_TOKEN', '.cdr-proxy-token');
 app.post('/cdr-proxy', (req, res) => {
     if (!CDR_PROXY_TOKEN) return res.status(503).json({ error: 'cdr_proxy_not_configured' });
     const auth = req.headers.authorization || '';

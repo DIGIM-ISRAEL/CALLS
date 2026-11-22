@@ -5,7 +5,7 @@
 //   GET  /app/current-dial?repEmail=  — נקרא ע"י הווב כדי לפתוח את הכרטיס
 //
 // החוזה: ראה DIALER_APP_SPEC. השרת לא נוגע בזרימת Maskyoo הקיימת — הכול אדיטיבי.
-// אימות: header X-Secret-Key == APP_SECRET_KEY (מפתח נפרד לאפליקציה; env או /var/webhook-forwarder/.app-key)
+// אימות: header X-Secret-Key == APP_SECRET_KEY (מפתח נפרד לאפליקציה; env או /var/calls-dialer/.app-key)
 const fs = require('fs');
 const https = require('https');
 const { spawn } = require('child_process');
@@ -14,10 +14,10 @@ let multer = null;
 try { multer = require('multer'); } catch (_) { /* נבדק ב-register */ }
 const { logDial, touchActivity } = require('./dial-logger');
 
-const REC_DIR = '/var/webhook-forwarder/recordings';
-const SEEN_FILE = '/var/webhook-forwarder/.phone-ingest-seen.json';
+const REC_DIR = '/var/calls-dialer/recordings';
+const SEEN_FILE = '/var/calls-dialer/.phone-ingest-seen.json';
 const APP_KEY = process.env.APP_SECRET_KEY
-  || (() => { try { return fs.readFileSync('/var/webhook-forwarder/.app-key', 'utf8').trim(); } catch (_) { return ''; } })();
+  || (() => { try { return fs.readFileSync('/var/calls-dialer/.app-key', 'utf8').trim(); } catch (_) { return ''; } })();
 
 // ─── Airtable (טוקן מ-.airtable-key; הערך לעולם לא נרשם ללוג) ──
 const { airtableConfig: airtableCfg } = require('./server-secrets');
@@ -135,7 +135,7 @@ function register(app, deps) {
         recDest = `${REC_DIR}/${recFilename}`;
         try { fs.renameSync(audio.path, recDest); } catch (_) { fs.copyFileSync(audio.path, recDest); try { fs.unlinkSync(audio.path); } catch (_) {} }
         recSize = fs.statSync(recDest).size;
-        recUrl = `https://leads.digim.co.il/recordings/${recFilename}`; // מוגש ע"י webhook-forwarder (/recordings/)
+        recUrl = `https://app.calls.org.il/recordings/${recFilename}`; // מוגש ע"י webhook-forwarder (/recordings/)
       } else if (audio) {
         cleanup();
       }
@@ -159,7 +159,7 @@ function register(app, deps) {
           recording: { filename: recFilename, filePath: recDest, size: recSize, downloadUrl: recUrl },
           timestamp: new Date().toISOString(), step: 4, source: 'phone',
         };
-        const an = spawn('node', ['donation-analyzer.js'], { cwd: '/var/webhook-forwarder', stdio: ['pipe', 'ignore', 'ignore'], detached: true });
+        const an = spawn('node', ['donation-analyzer.js'], { cwd: '/var/calls-dialer', stdio: ['pipe', 'ignore', 'ignore'], detached: true });
         an.stdin.write(JSON.stringify(params)); an.stdin.end(); an.unref();
         analysisStarted = true;
       }

@@ -1,11 +1,12 @@
 // test-3calls.js - process first 3 CDR-matched records for today
+const { readSecret: __readSecret } = require('./server-secrets'); // secrets live in env / root-only key files, never in code
 const https = require('https');
 const { spawn } = require('child_process');
 
-const AIRTABLE_API_KEY = 'process.env.AIRTABLE_API_KEY';
+const AIRTABLE_API_KEY = __readSecret('AIRTABLE_API_KEY', '.airtable-key');
 const AIRTABLE_BASE_ID = 'app5pnaEc4UK3RUcP';
 const TELEMARKETING_TABLE = 'tblcNkAMMCJQ3EVMl';
-const MASKYOO_API_KEY = 'process.env.MASKYOO_API_KEY';
+const MASKYOO_API_KEY = __readSecret('MASKYOO_API_KEY', '.maskyoo-key');
 const MAX_CALLS = parseInt(process.argv[2]) || 3;
 const TODAY = '2026-04-26';
 
@@ -43,7 +44,7 @@ async function fetchRecords(status) {
 
 async function fetchCDR(date, virtualNumber) {
     return new Promise((resolve) => {
-        const sql = `SELECT cdr_uniqueid, start_call, end_call, call_duration, cdr_ani, cdr_ddi, user_phone, call_status FROM webserviceview WHERE start_call >= '${date} 00:00:00' AND start_call <= '${date} 23:59:59' AND cdr_ddi = '${virtualNumber}' AND end_call IS NOT NULL AND call_status = 'ANSWER' ORDER BY start_call ASC`;
+        const sql = `SELECT cdr_uniqueid, start_call, end_call, call_duration, cdr_ani, cdr_ddi, user_phone, call_status FROM webserviceview WHERE start_call >= '${date} 00:00:00' AND start_call <= '${date} 23:59:59' AND cdr_ddi = '${virtualNumber}' AND end_call > '2000-01-01' AND call_status = 'ANSWER' ORDER BY start_call ASC`;
         const params = new URLSearchParams({ service: 'cdr_query', sql, format: 'json' });
         const url = `https://app.maskyoo.co.il/issa_153/api/?${params}`;
         const req = https.request(url, { headers: { 'Authorization': `Bearer ${MASKYOO_API_KEY}`, 'User-Agent': 'Test3Calls/1.0' } }, (res) => {
@@ -67,7 +68,7 @@ async function runUUIDTester(recordId, virtualNumber, customerPhone, callTime, u
                 callStatusField: 'call_status', callTimeField: 'call_time'
             }
         };
-        const child = spawn('node', ['uuid-tester-tele.js'], { cwd: '/var/webhook-forwarder', stdio: ['pipe', 'pipe', 'pipe'] });
+        const child = spawn('node', ['uuid-tester-tele.js'], { cwd: '/var/calls-dialer', stdio: ['pipe', 'pipe', 'pipe'] });
         let output = '', errors = '';
         child.stdout.on('data', d => { output += d; process.stdout.write('  > ' + d); });
         child.stderr.on('data', d => { errors += d; process.stderr.write('  ERR> ' + d); });

@@ -2,25 +2,27 @@
 // Power Dialer — חיוג אוטומטי רצוף
 // PORT 3003 | PM2: power-dialer
 
+const { readSecret: __readSecret } = require('./server-secrets'); // secrets live in env / root-only key files, never in code
 const express = require('express');
 const https = require('https');
 const http = require('http');
+const { logDial } = require('./dial-logger');
 
 const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT || 3003;
-const SECRET_KEY = process.env.DIALER_SECRET_KEY || '';
+const SECRET_KEY = __readSecret('DIALER_SECRET_KEY', '.dialer-key');
 
 // ─── קונפיגורציה ───────────────────────────────────────────
 const AIRTABLE_CONFIG = {
-    apiKey: 'process.env.AIRTABLE_API_KEY',
+    apiKey: __readSecret('AIRTABLE_API_KEY', '.airtable-key'),
     baseId: 'app5pnaEc4UK3RUcP',
     tableId: 'tblcNkAMMCJQ3EVMl'
 };
 
 const MASKYOO_CONFIG = {
-    apiKey: 'process.env.MASKYOO_API_KEY',
+    apiKey: __readSecret('MASKYOO_API_KEY', '.maskyoo-key'),
     baseUrl: 'https://app.maskyoo.co.il/issa_153/api/'
 };
 
@@ -241,6 +243,15 @@ function formatPhone(phone) {
 }
 
 // ─── לולאת החיוג הראשית ──────────────────────────────────────
+function isInternationalPhone(raw) {
+    const c = String(raw || '').replace(/\D/g, '');
+    if (!c) return false;
+    if (c.startsWith('972')) return false;
+    if (c.startsWith('0')) return false;
+    if (c.length <= 9) return false;
+    return true;
+}
+
 async function dialingLoop() {
     addLog('▶️  PLAY — מתחיל חיוג');
     dialerState.startedAt = new Date().toISOString();
@@ -265,6 +276,12 @@ async function dialingLoop() {
         const { id: recordId, fields } = record;
         const phoneNumber = formatPhone(fields.phone_number);
         const phoneMyUser = formatPhone(fields.phone_my_user);
+
+        if (isInternationalPhone(fields.phone_number)) {
+            addLog(`🌍 דילוג — מספר חו"ל (${recordId})`);
+            dialerState.stats.skipped++;
+            continue;
+        }
 
         if (!phoneNumber || !phoneMyUser) {
             addLog(`⚠️  דילוג — חסר מספר טלפון (${recordId})`);
@@ -296,6 +313,14 @@ async function dialingLoop() {
 
         // המתנה לסיום השיחה
         const callEnd = await waitForCallToEnd(phoneMyUser, phoneNumber, callStartTime);
+        logDial({
+            rep_phone: phoneMyUser,
+            donor_phone: phoneNumber,
+            call_status: callEnd.status || callEnd.reason || "unknown",
+            duration_seconds: callEnd.duration || 0,
+            maskyoo_uuid: callEnd.uuid || null,
+            started_at: new Date(callStartTime).toISOString(),
+        }, addLog);
 
         if (callEnd.reason === 'timeout') {
             addLog(`⏱️  Timeout — ממשיך לבאה`);
@@ -328,7 +353,7 @@ async function dialingLoop() {
 
 // ─── אבטחה ───────────────────────────────────────────────────
 function auth(req, res, next) {
-    if (req.headers['x-secret-key'] !== SECRET_KEY) {
+    if (!SECRET_KEY || req.headers['x-secret-key'] !== SECRET_KEY) {
         return res.status(401).json({ success: false, error: 'Unauthorized' });
     }
     next();

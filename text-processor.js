@@ -1,10 +1,11 @@
 // 🧹 Text Processor (v2.0) - Handles long transcripts (1-2 hours)
+const { readSecret: __readSecret } = require('./server-secrets'); // secrets live in env / root-only key files, never in code
 const https = require('https');
 
 console.log('🧹 Text processor module loaded (Advanced Chunking Enabled)');
 
 const OPENAI_CONFIG = {
-    apiKey: process.env.OPENAI_API_KEY || (() => { try { return require('fs').readFileSync(require('path').join(__dirname, '.openai-key'), 'utf8').trim(); } catch { return ''; } })(), // env, else .openai-key
+    apiKey: __readSecret('OPENAI_API_KEY', '.openai-key'),
     model: 'gpt-4o', // מודל חזק ומהיר יותר
     baseUrl: 'api.openai.com'
 };

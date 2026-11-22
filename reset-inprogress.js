@@ -1,6 +1,7 @@
 // reset-inprogress.js - מאפס רשומות in_progress חזרה ל-Processing
+const { readSecret: __readSecret } = require('./server-secrets'); // secrets live in env / root-only key files, never in code
 const https = require('https');
-const AIRTABLE_API_KEY = 'process.env.AIRTABLE_API_KEY';
+const AIRTABLE_API_KEY = __readSecret('AIRTABLE_API_KEY', '.airtable-key');
 const AIRTABLE_BASE_ID = 'app5pnaEc4UK3RUcP';
 const TELEMARKETING_TABLE = 'tblcNkAMMCJQ3EVMl';
 const TODAY = process.argv[2] || '2026-04-26';

@@ -1,11 +1,12 @@
 // 🔧 uuid-tester.js - גרסה מתוקנת עם debug מלא
 // גרסה המחליפה לחלוטין את הקובץ הישן
 
+const { readSecret: __readSecret } = require('./server-secrets'); // secrets live in env / root-only key files, never in code
 const https = require('https');
 const { spawn } = require('child_process');
 
 const MASKYOO_CONFIG = {
-    apiKey: 'process.env.MASKYOO_API_KEY',
+    apiKey: __readSecret('MASKYOO_API_KEY', '.maskyoo-key'),
     baseUrl: 'https://app.maskyoo.co.il/issa_153/api/'
 };
 
@@ -18,7 +19,7 @@ async function findCallUUID(phoneMyUser, phoneNumber, callTime) {
             const endTime = new Date(israeliDate.getTime() + 10 * 60000);
             const formatDate = (date) => date.toISOString().slice(0, 19).replace('T', ' ');
             
-            const sqlQuery = `SELECT cdr_uniqueid, start_call, end_call, call_duration, cdr_ani, user_phone, call_status FROM webserviceview WHERE cdr_ddi = '${phoneMyUser}' AND (cdr_ani = '${phoneNumber}' OR user_phone = '${phoneNumber}') AND start_call >= '${formatDate(startTime)}' AND start_call <= '${formatDate(endTime)}' AND end_call IS NOT NULL ORDER BY start_call DESC LIMIT 1`;
+            const sqlQuery = `SELECT cdr_uniqueid, start_call, end_call, call_duration, cdr_ani, user_phone, call_status FROM webserviceview WHERE cdr_ddi = '${phoneMyUser}' AND (cdr_ani = '${phoneNumber}' OR user_phone = '${phoneNumber}') AND start_call >= '${formatDate(startTime)}' AND start_call <= '${formatDate(endTime)}' AND end_call > '2000-01-01' ORDER BY start_call DESC LIMIT 1`;
             
             console.log('🔍 === STEP 2: UUID SEARCH ===');
             console.log('From:', phoneMyUser);
@@ -32,17 +33,21 @@ async function findCallUUID(phoneMyUser, phoneNumber, callTime) {
                 format: 'json'
             });
 
-            const url = MASKYOO_CONFIG.baseUrl + '?' + params.toString();
-            
+            // POST עם ה-SQL בגוף הבקשה - Cloudflare של Maskyoo חוסם SQL בכתובת
+            const postData = params.toString();
             const options = {
-                method: 'GET',
+                hostname: 'app.maskyoo.co.il',
+                port: 443,
+                path: '/issa_153/api/',
+                method: 'POST',
                 headers: {
                     'Authorization': 'Bearer ' + MASKYOO_CONFIG.apiKey,
-                    'User-Agent': 'UUID-Tester-Fixed/1.0'
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Content-Length': Buffer.byteLength(postData)
                 }
             };
 
-            const req = https.request(url, options, (res) => {
+            const req = https.request(options, (res) => {
                 let data = '';
                 res.on('data', (chunk) => {
                     data += chunk;
@@ -91,6 +96,7 @@ async function findCallUUID(phoneMyUser, phoneNumber, callTime) {
                 reject(error);
             });
             
+            req.write(postData);
             req.end();
             
         } catch (error) {
@@ -231,7 +237,7 @@ async function triggerRecordingDownload(uuid, callInfo, jobData) {
             console.log('🔧 DEBUG: About to spawn with race condition protection...');
             
             const downloader = spawn('node', ['recording-downloader.js'], {
-                cwd: '/var/webhook-forwarder',
+                cwd: '/var/calls-dialer',
                 stdio: ['pipe', 'pipe', 'pipe'],
                 env: process.env,
                 // ✅ הוסף detached כדי למנוע orphan processes

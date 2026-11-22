@@ -1,5 +1,6 @@
 // recording-downloader-tele.js — גרסת טלמרקטינג (מנותקת מתהליך הלידים הראשי)
 
+const { readSecret: __readSecret } = require('./server-secrets'); // secrets live in env / root-only key files, never in code
 const https = require('https');
 const http = require('http');
 const { URL } = require('url');
@@ -8,7 +9,7 @@ console.log('📋 Loading FIXED recording uploader...');
 
 // 🔐 קונפיגורציה
 const MASKYOO_CONFIG = {
-    apiKey: 'process.env.MASKYOO_API_KEY',
+    apiKey: __readSecret('MASKYOO_API_KEY', '.maskyoo-key'),
     baseUrl: 'https://app.maskyoo.co.il/issa_153/api/'
 };
 
@@ -188,14 +189,14 @@ async function uploadRecordingToAirtable(recordId, audioBuffer, filename, airtab
         try {
             // שלב 1: שמירת הקובץ בשרת זמנית
             const fs = require('fs');
-            const tempFilePath = `/var/webhook-forwarder/recordings/${filename}`;
+            const tempFilePath = `/var/calls-dialer/recordings/${filename}`;
             
             console.log(`💾 Saving file temporarily: ${tempFilePath}`);
             fs.writeFileSync(tempFilePath, audioBuffer);
             console.log(`✅ File saved to server`);
             
             // שלב 2: יצירת URL
-            const fileUrl = `https://leads.digim.co.il/recordings/${filename}`;
+            const fileUrl = `https://app.calls.org.il/recordings/${filename}`;
             console.log(`🔗 File URL: ${fileUrl}`);
             
             // שלב 3: קריאת קבצים קיימים
@@ -516,7 +517,7 @@ console.log(`📤 Airtable: ${airtableResult.success ? '✅ SUCCESS' : '❌ FAIL
                 airtableConfig: airtableConfig,
 recording: {
     filename: downloadResult.filename,
-    filePath: `/var/webhook-forwarder/recordings/${downloadResult.filename}`,
+    filePath: `/var/calls-dialer/recordings/${downloadResult.filename}`,
     audioBuffer: "file_on_server", // placeholder
     size: downloadResult.size,
     downloadUrl: airtableResult.fileUrl || null
@@ -531,7 +532,7 @@ recording: {
                 const analyzerScript = jobData.analyzerScript || 'speech-analyzer.js';
                 console.log(`🧠 Using analyzer: ${analyzerScript}`);
                 const analyzer = spawn('node', [analyzerScript], {
-                    cwd: '/var/webhook-forwarder',
+                    cwd: '/var/calls-dialer',
                     stdio: ['pipe', 'pipe', 'pipe']
                 });
                 

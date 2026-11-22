@@ -1,6 +1,7 @@
 // 🧠 שלב 4: Speech Analysis - תיקון טעינת קובץ אודיו
 // תמלול ב-Whisper + ניתוח מכירה ב-GPT-4
 
+const { readSecret: __readSecret } = require('./server-secrets'); // secrets live in env / root-only key files, never in code
 const https = require('https');
 const FormData = require('form-data');
 const { Readable } = require('stream');
@@ -91,7 +92,7 @@ function calculateFollowUpDate(followUpPeriod) {
 
 // 🔐 קונפיגורציה - OpenAI API
 const OPENAI_CONFIG = {
-    apiKey: process.env.OPENAI_API_KEY || (() => { try { return require('fs').readFileSync(require('path').join(__dirname, '.openai-key'), 'utf8').trim(); } catch { return ''; } })(), // env, else .openai-key
+    apiKey: __readSecret('OPENAI_API_KEY', '.openai-key'),
     whisperModel: 'gpt-4o-transcribe',
     gptModel: 'gpt-4o',
     baseUrl: 'https://api.openai.com/v1'
@@ -684,7 +685,7 @@ async function processSpeechAnalysis(jobData) {
         console.log(`\n📁 === STEP 4.0: LOADING AUDIO FILE FROM SERVER ===`);
         
         let audioBuffer;
-        const audioFilePath = `/var/webhook-forwarder/recordings/${recording.filename}`;
+        const audioFilePath = `/var/calls-dialer/recordings/${recording.filename}`;
         console.log(`📁 Loading audio file from server: ${audioFilePath}`);
         
         if (fs.existsSync(audioFilePath)) {
@@ -694,7 +695,7 @@ async function processSpeechAnalysis(jobData) {
             console.error(`❌ Audio file not found: ${audioFilePath}`);
             console.log(`📋 Available files in recordings directory:`);
             try {
-                const files = fs.readdirSync('/var/webhook-forwarder/recordings/');
+                const files = fs.readdirSync('/var/calls-dialer/recordings/');
                 console.log(files);
             } catch (e) {
                 console.log('Could not list recordings directory');
@@ -889,7 +890,7 @@ async function runStandalone() {
     };
     
     console.log(`📦 Would analyze:`);
-    console.log(`   🎵 Audio file from server: /var/webhook-forwarder/recordings/${testJobData.recording.filename}`);
+    console.log(`   🎵 Audio file from server: /var/calls-dialer/recordings/${testJobData.recording.filename}`);
     console.log(`   📊 Call duration: ${testJobData.callInfo.call_duration} seconds`);
     console.log(`   📞 From: ${testJobData.callInfo.cdr_ani} → To: ${testJobData.callInfo.user_phone}`);
     

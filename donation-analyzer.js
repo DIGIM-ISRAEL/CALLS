@@ -1,13 +1,14 @@
 // donation-analyzer.js
 // ניתוח שיחות תרומה עם GPT-4
 
+const { readSecret: __readSecret } = require('./server-secrets'); // secrets live in env / root-only key files, never in code
 const https = require('https');
 const fs = require('fs');
 const { transcribeAudioWithWhisper } = require('./speech-analyzer');
 const { saveDonationResults, setCallStatus } = require('./donation-airtable');
 const { logDial, saveTranscript } = require('./dial-logger');
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || (() => { try { return require('fs').readFileSync(require('path').join(__dirname, '.openai-key'), 'utf8').trim(); } catch { return ''; } })(); // env, else .openai-key next to this file — never commit the key
+const OPENAI_API_KEY = __readSecret('OPENAI_API_KEY', '.openai-key');
 const GPT_MODEL = 'gpt-4o';
 
 // קריאה ל-answer-checker (CDR+VAD) — המקור הסמכותי היחיד ל-call_status (Answered/No Answer).
@@ -197,7 +198,7 @@ if (require.main === module) {
             console.log(`📋 Processing donation analysis for UUID: ${uuid}`);
 
             // שלב 1: טעינת קובץ
-            const audioFilePath = `/var/webhook-forwarder/recordings/${recording.filename}`;
+            const audioFilePath = `/var/calls-dialer/recordings/${recording.filename}`;
             if (!fs.existsSync(audioFilePath)) {
                 console.error(`❌ Audio file not found: ${audioFilePath}`);
                 process.exit(1);

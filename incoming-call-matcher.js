@@ -2,6 +2,7 @@
 // סורק שיחות נכנסות מאתמול ומעבד אותן דרך הפייפליין הקיים
 // רץ אוטומטית כל יום ב-02:00 שעון ישראל
 
+const { readSecret: __readSecret } = require('./server-secrets'); // secrets live in env / root-only key files, never in code
 const https = require('https');
 const { spawn } = require('child_process');
 const cron = require('node-cron');
@@ -11,23 +12,17 @@ const cron = require('node-cron');
 // ═══════════════════════════════════════════
 
 const MASKYOO_CONFIG = {
-    apiKey: 'process.env.MASKYOO_API_KEY',
+    apiKey: __readSecret('MASKYOO_API_KEY', '.maskyoo-key'),
     baseUrl: 'https://app.maskyoo.co.il/issa_153/api/'
 };
 
-const AIRTABLE_API_KEY = 'process.env.AIRTABLE_API_KEY';
+const AIRTABLE_API_KEY = __readSecret('AIRTABLE_API_KEY', '.airtable-key');
 const AIRTABLE_BASE_ID = 'app5pnaEc4UK3RUcP';
 
 // ═══════════════════════════════════════════
 // הוספת טבלה חדשה – רק כאן, שום דבר אחר לא משתנה
 // ═══════════════════════════════════════════
 const TABLES = [
-    {
-        tableId: 'tblABFOvI4cQSz3sg',
-        tableName: 'Gem diamura',
-        phoneField: 'phone_number',
-        virtualNumberField: 'phone_my_user'
-    },
     {
         tableId: 'tblcNkAMMCJQ3EVMl',
         tableName: 'leads of Clients: Telemarketing',
@@ -306,7 +301,7 @@ async function processCallWithUUIDTester(call, record, table) {
 
     return new Promise((resolve) => {
         const child = spawn('node', ['uuid-tester.js'], {
-            cwd: '/var/webhook-forwarder',
+            cwd: '/var/calls-dialer',
             stdio: ['pipe', 'pipe', 'pipe']
         });
 

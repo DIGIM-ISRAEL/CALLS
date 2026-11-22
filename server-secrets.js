@@ -1,3 +1,4 @@
+require("./maskyoo-egress"); // Maskyoo traffic exits via the allowlisted IP (see maskyoo-egress.js)
 // סודות השרת — env קודם, אחרת קובץ root-only בתיקיית השרת. לעולם לא בקוד ולא בלוג.
 // .airtable-key / .maskyoo-key / .donation-key / .app-key / .openai-key (כולם ב-.gitignore)
 const fs = require('fs');
